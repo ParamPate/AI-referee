@@ -159,7 +159,7 @@ def _print_point(engine: RefereeEngine, pt: PointResult) -> None:
     s = engine.scorer
     print(f"\n  >>> POINT -> {pt.winner}  ({pt.reason})")
     print(f"      Score : Player A {s.score_a} - Player B {s.score_b}")
-    print(f"      Server: {s.current_server}")
+
     if s.is_match_over():
         print(f"\n  === GAME OVER! {s.match_winner} WINS! ===")
 

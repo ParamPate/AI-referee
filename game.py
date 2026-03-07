@@ -61,15 +61,13 @@ class PointResult:
 
 
 # =====================================================================
-# Scoring  (first to 11, lead by 2, server rotates every 2 pts)
+# Scoring  (first to 11, lead by 2)
 # =====================================================================
 
 class Scorer:
-    def __init__(self, initial_server: str = PLAYER_A):
+    def __init__(self):
         self.score_a = 0
         self.score_b = 0
-        self.initial_server = initial_server
-        self.current_server = initial_server
         self.match_winner: str | None = None
 
     @property
@@ -84,8 +82,6 @@ class Scorer:
         else:
             self.score_b += 1
         self._check_winner()
-        if not self.match_winner:
-            self._update_server()
 
     def is_match_over(self) -> bool:
         return self.match_winner is not None
@@ -95,16 +91,6 @@ class Scorer:
             self.match_winner = PLAYER_A
         elif self.score_b >= 11 and self.score_b - self.score_a >= 2:
             self.match_winner = PLAYER_B
-
-    def _update_server(self) -> None:
-        total = self.total_points
-        other = opponent(self.initial_server)
-        if min(self.score_a, self.score_b) >= 10:
-            deuce_pts = total - 20
-            self.current_server = self.initial_server if deuce_pts % 2 == 0 else other
-        else:
-            block = total // 2
-            self.current_server = self.initial_server if block % 2 == 0 else other
 
 
 # =====================================================================
@@ -202,8 +188,8 @@ class GameStateMachine:
 # =====================================================================
 
 class RefereeEngine:
-    def __init__(self, initial_server: str = PLAYER_A):
-        self.scorer = Scorer(initial_server)
+    def __init__(self):
+        self.scorer = Scorer()
         self.state_machine = GameStateMachine()
 
     def process_event(self, event: CVEvent) -> PointResult | None:

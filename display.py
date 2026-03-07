@@ -26,8 +26,6 @@ def draw_score(frame: np.ndarray, engine: RefereeEngine) -> None:
     cv2.rectangle(frame, (0,0), (w, 55), (30,30,30), -1)
     cv2.putText(frame, f"Player A: {s.score_a}  |  Player B: {s.score_b}",
                 (20, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (255,255,255), 2)
-    cv2.putText(frame, f"Serve: {s.current_server}",
-                (w-310, 38), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,200,255), 2)
     cv2.putText(frame, f"State: {sm.state.value}",
                 (20, h-12), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (180,180,180), 1)
     if s.match_winner:
