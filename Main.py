@@ -115,12 +115,6 @@ def run(camera_index: int, use_saved: bool = False) -> None:
         else:
             trail.clear()
 
-        timeout_pt = engine.check_timeout(ts)
-        if timeout_pt:
-            _print_point(engine, timeout_pt)
-            bounce_det.reset()
-            oob_det.reset()
-
         draw_table(disp, table_pts)
         draw_score(disp, engine)
 
