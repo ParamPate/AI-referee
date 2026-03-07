@@ -12,18 +12,23 @@ import numpy as np
 # =====================================================================
 
 class BallTracker:
-    MAX_JUMP_PX = 250
+    MAX_JUMP_PX = 350        # allow larger jumps for fast balls
+    MAX_LOST_FRAMES = 20     # coast on Kalman for up to 20 frames
 
     def __init__(self, hsv_lower: list[int], hsv_upper: list[int]):
         self.hsv_lower = np.array(hsv_lower, dtype=np.uint8)
         self.hsv_upper = np.array(hsv_upper, dtype=np.uint8)
+        # Slightly widen the HSV range to handle motion blur / lighting shifts
+        self._hsv_lo_wide = np.clip(self.hsv_lower - [8, 40, 40], 0, 255).astype(np.uint8)
+        self._hsv_hi_wide = np.clip(self.hsv_upper + [8, 40, 40], 0, 255).astype(np.uint8)
         self._init_kalman()
         self._kalman_ready = False
-        self._lost_count = 16
+        self._lost_count = self.MAX_LOST_FRAMES + 1
         self._last_raw: tuple[int, int] | None = None
         self._last_good: tuple[float, float] | None = None
         self._roi_mask: np.ndarray | None = None
         self.debug_mask: np.ndarray | None = None
+        self._prev_gray: np.ndarray | None = None   # for frame-diff assist
 
     def set_table_roi(self, table_pts: list[list[int]], shape: tuple,
                       h_pad: int = 200, v_pad_above: int = 300, v_pad_below: int = 80) -> None:
@@ -55,7 +60,7 @@ class BallTracker:
             s = self.kf.statePost
             return float(s[0][0]), float(s[1][0]), float(s[2][0]), float(s[3][0])
         self._lost_count += 1
-        if self._kalman_ready and self._lost_count <= 15:
+        if self._kalman_ready and self._lost_count <= self.MAX_LOST_FRAMES:
             p = self.kf.predict()
             return float(p[0][0]), float(p[1][0]), float(p[2][0]), float(p[3][0])
         return None
@@ -66,24 +71,48 @@ class BallTracker:
 
     def _detect(self, frame: np.ndarray) -> tuple[int, int] | None:
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        # Primary color mask (tight range)
         mask = cv2.inRange(hsv, self.hsv_lower, self.hsv_upper)
+
+        # Frame-difference assist: highlights moving objects, ANDed with wide color mask
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        gray = cv2.GaussianBlur(gray, (5, 5), 0)
+        if self._prev_gray is not None and self._prev_gray.shape == gray.shape:
+            diff = cv2.absdiff(gray, self._prev_gray)
+            _, motion = cv2.threshold(diff, 18, 255, cv2.THRESH_BINARY)
+            wide_color = cv2.inRange(hsv, self._hsv_lo_wide, self._hsv_hi_wide)
+            motion_ball = cv2.bitwise_and(motion, wide_color)
+            # Combine: either strong color hit OR moving + wide color hit
+            mask = cv2.bitwise_or(mask, motion_ball)
+        self._prev_gray = gray
+
         if self._roi_mask is not None:
             mask = cv2.bitwise_and(mask, self._roi_mask)
+
         k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k)
         self.debug_mask = mask.copy()
+
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        # If Kalman has a prediction, prefer candidates near it
+        pred_pt: tuple[float, float] | None = None
+        if self._kalman_ready and self._lost_count <= self.MAX_LOST_FRAMES:
+            s = self.kf.statePost
+            pred_pt = (float(s[0][0]), float(s[1][0]))
+
         best, best_score = None, 0.0
         for c in contours:
             area = cv2.contourArea(c)
-            if area < 15 or area > 12000:
+            if area < 10 or area > 14000:
                 continue
             perim = cv2.arcLength(c, True)
             if perim == 0:
                 continue
             circ = 4.0 * np.pi * area / (perim * perim)
-            if circ < 0.15:  # confidence threshold
+            if circ < 0.15:
                 continue
             M = cv2.moments(c)
             if M["m00"] <= 0:
@@ -92,7 +121,12 @@ class BallTracker:
             if self._last_good is not None:
                 if np.hypot(cx - self._last_good[0], cy - self._last_good[1]) > self.MAX_JUMP_PX:
                     continue
-            score = circ * area
+            # Boost score for candidates near the Kalman prediction
+            prox_bonus = 1.0
+            if pred_pt is not None:
+                dist = np.hypot(cx - pred_pt[0], cy - pred_pt[1])
+                prox_bonus = 1.0 + max(0.0, 1.0 - dist / 120.0)
+            score = circ * area * prox_bonus
             if score > best_score:
                 best_score = score
                 best = (cx, cy)
@@ -102,8 +136,10 @@ class BallTracker:
         self.kf = cv2.KalmanFilter(4, 2)
         self.kf.measurementMatrix = np.array([[1,0,0,0],[0,1,0,0]], np.float32)
         self.kf.transitionMatrix = np.array([[1,0,1,0],[0,1,0,1],[0,0,1,0],[0,0,0,1]], np.float32)
-        self.kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.05
-        self.kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 2.0
+        # Higher process noise = Kalman follows the ball faster
+        self.kf.processNoiseCov = np.eye(4, dtype=np.float32) * 0.5
+        # Lower measurement noise = trust detections more
+        self.kf.measurementNoiseCov = np.eye(2, dtype=np.float32) * 1.0
 
 
 def sample_ball_color(frame: np.ndarray, cx: int, cy: int) -> tuple[list[int], list[int]]:
@@ -124,9 +160,11 @@ def sample_ball_color(frame: np.ndarray, cx: int, cy: int) -> tuple[list[int], l
 # =====================================================================
 
 class BounceDetector:
+    COOLDOWN_FRAMES = 18
+
     def __init__(self) -> None:
         self.positions: list[tuple[float, float]] = []
-        self.cooldown = 9
+        self.cooldown = self.COOLDOWN_FRAMES
 
     def update(self, x: float, y: float) -> tuple[bool, float, float]:
         self.positions.append((x, y))
@@ -138,14 +176,14 @@ class BounceDetector:
         vy_curr = self._vy(-3, 0)
         if abs(vy_prev) < 1.5 or abs(vy_curr) < 1.5:
             return False, vy_prev, vy_curr
-        if vy_prev > 0 and vy_curr < 0 and self.cooldown > 8:
+        if vy_prev > 0 and vy_curr < 0 and self.cooldown >= self.COOLDOWN_FRAMES:
             self.cooldown = 0
             return True, vy_prev, vy_curr
         return False, vy_prev, vy_curr
 
     def reset(self) -> None:
         self.positions.clear()
-        self.cooldown = 9
+        self.cooldown = self.COOLDOWN_FRAMES
 
     def _vy(self, s: int, e: int) -> float:
         seg = self.positions[max(0, len(self.positions)+s):len(self.positions)+e]

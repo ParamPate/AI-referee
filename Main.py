@@ -93,11 +93,15 @@ def run(camera_index: int, use_saved: bool = False) -> None:
                 pt = engine.process_event(CVEvent(ts, nx, 0.5, vyp, vyc))
                 if pt:
                     _print_point(engine, pt)
+                    bounce_det.reset()
+                    oob_det.reset()
 
             if oob_det.update(nx):
                 pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
                 if pt:
                     _print_point(engine, pt)
+                    bounce_det.reset()
+                    oob_det.reset()
 
             cv2.circle(disp, (ipx, ipy), 8, (0,0,255), -1)
             cv2.circle(disp, (ipx, ipy), 10, (255,255,255), 2)
@@ -113,6 +117,8 @@ def run(camera_index: int, use_saved: bool = False) -> None:
         timeout_pt = engine.check_timeout(ts)
         if timeout_pt:
             _print_point(engine, timeout_pt)
+            bounce_det.reset()
+            oob_det.reset()
 
         draw_table(disp, table_pts)
         draw_score(disp, engine)
