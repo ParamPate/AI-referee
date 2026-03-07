@@ -4,3 +4,6 @@ elevenlabs>=1.0.0
 opencv-python>=4.5.0
 numpy>=1.21.0
 shapely>=2.0.0
+fastapi>=0.110.0
+uvicorn[standard]>=0.29.0
+websockets>=12.0
