@@ -224,26 +224,10 @@ class GameStateMachine:
         prev_side = self._bounce_history[-2][0]
         curr_side = self._bounce_history[-1][0]
 
-        if curr_side == prev_side:
-            # Double bounce on the same side
-            striker_side = side_for_player(self.current_striker)
-            if curr_side == striker_side:
-                # Ball came back to striker's own side (net / return fault)
-                return self._award(
-                    opponent(self.current_striker),
-                    f"Net/return fault by {self.current_striker}",
-                    event.timestamp,
-                )
-            # Ball bounced twice on opponent's side — opponent failed to return
-            return self._award(
-                self.current_striker,
-                f"Double bounce — {opponent(self.current_striker)} failed to return",
-                event.timestamp,
-            )
-
-        # Ball crossed to the other side — valid return
-        # The player on the *previous* bounce's side made the hit
-        self.current_striker = player_for_side(prev_side)
+        if curr_side != prev_side:
+            # Ball crossed to the other side — valid return
+            # The player on the *previous* bounce's side made the hit
+            self.current_striker = player_for_side(prev_side)
         return None
 
     # ── OOB handler ──────────────────────────────────────────────────
