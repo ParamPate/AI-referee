@@ -117,43 +117,84 @@ class State(str, Enum):
 
 
 class GameStateMachine:
+    # Ignore bounce/OOB events for this long after a point is awarded
+    POST_POINT_LOCKOUT_MS = 1500
+
     def __init__(self):
         self.state = State.PLAYING
-        self.last_bounce_side: str | None = None
-        self.last_bounce_ts: int | None = None
+        # Each entry is (side, timestamp_ms)
+        self._bounce_history: list[tuple[str, int]] = []
+        self._last_point_ts: int = -(self.POST_POINT_LOCKOUT_MS + 1)
 
+    # ── convenience properties (read-only) ──────────────────────────
+    @property
+    def last_bounce_side(self) -> str | None:
+        return self._bounce_history[-1][0] if self._bounce_history else None
+
+    @property
+    def last_bounce_ts(self) -> int | None:
+        return self._bounce_history[-1][1] if self._bounce_history else None
+
+    # ── public interface ─────────────────────────────────────────────
     def process_event(self, event: CVEvent) -> PointResult | None:
         if self.state == State.POINT_END:
             return None
-        r = table_region(event.x)
-        if r == OUT:
-            if self.last_bounce_side is not None:
-                hitter = player_for_side(self.last_bounce_side)
-                self.state = State.POINT_END
-                return PointResult(winner=opponent(hitter), reason="Out of bounds")
+        # Ignore events during post-point lockout
+        if event.timestamp - self._last_point_ts < self.POST_POINT_LOCKOUT_MS:
             return None
-        if self.last_bounce_side is None:
-            self.last_bounce_side = r
-            self.last_bounce_ts = event.timestamp
-            return None
-        if r == self.last_bounce_side:
-            failed = player_for_side(r)
-            self.state = State.POINT_END
-            return PointResult(winner=opponent(failed), reason="Double bounce")
-        self.last_bounce_side = r
-        self.last_bounce_ts = event.timestamp
-        return None
+        # Sentinel: vy_prev==1.0 and vy_current==-1.0 means OOB
+        is_oob = (event.vy_prev == 1.0 and event.vy_current == -1.0)
+        if is_oob:
+            return self._handle_oob(event)
+        return self._handle_bounce(event)
 
-    def check_timeout(self, now_ms: int, timeout_ms: int = 2000) -> PointResult | None:
+    def check_timeout(self, now_ms: int, timeout_ms: int = 3000) -> PointResult | None:
         if self.state == State.POINT_END:
             return None
-        if self.last_bounce_ts is None or self.last_bounce_side is None:
+        if not self._bounce_history:
             return None
-        if now_ms - self.last_bounce_ts >= timeout_ms:
-            loser = player_for_side(self.last_bounce_side)
+        if now_ms - self._last_point_ts < self.POST_POINT_LOCKOUT_MS:
+            return None
+        last_side, last_ts = self._bounce_history[-1]
+        if now_ms - last_ts >= timeout_ms:
+            loser = player_for_side(last_side)
+            result = PointResult(winner=opponent(loser), reason="No return (3s timeout)")
             self.state = State.POINT_END
-            return PointResult(winner=opponent(loser), reason="No return (2s timeout)")
+            self._last_point_ts = now_ms
+            return result
         return None
+
+    # ── private helpers ──────────────────────────────────────────────
+    def _handle_bounce(self, event: CVEvent) -> PointResult | None:
+        side = table_side(event.x)
+        self._bounce_history.append((side, event.timestamp))
+
+        # Need at least two bounces to decide anything
+        if len(self._bounce_history) < 2:
+            return None
+
+        prev_side = self._bounce_history[-2][0]
+        curr_side = self._bounce_history[-1][0]
+
+        if curr_side == prev_side:
+            # Ball bounced twice on the same side — that player failed to return
+            failed = player_for_side(curr_side)
+            result = PointResult(winner=opponent(failed), reason="Double bounce")
+            self.state = State.POINT_END
+            self._last_point_ts = event.timestamp
+            return result
+        return None
+
+    def _handle_oob(self, event: CVEvent) -> PointResult | None:
+        # Must have seen at least one bounce to attribute blame
+        if not self._bounce_history:
+            return None
+        last_side = self._bounce_history[-1][0]
+        hitter = player_for_side(last_side)
+        result = PointResult(winner=opponent(hitter), reason="Out of bounds")
+        self.state = State.POINT_END
+        self._last_point_ts = event.timestamp
+        return result
 
 
 # =====================================================================

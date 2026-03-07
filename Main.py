@@ -85,7 +85,8 @@ def run(camera_index: int, use_saved: bool = False) -> None:
 
             raw = tracker.last_raw
             if raw is not None:
-                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]))
+                table_y = normalizer.get_table_y(float(raw[0]))
+                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]), table_y)
             else:
                 is_bounce, vyp, vyc = False, 0.0, 0.0
 

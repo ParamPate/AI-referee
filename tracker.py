@@ -166,7 +166,7 @@ class BounceDetector:
         self.positions: list[tuple[float, float]] = []
         self.cooldown = self.COOLDOWN_FRAMES
 
-    def update(self, x: float, y: float) -> tuple[bool, float, float]:
+    def update(self, x: float, y: float, table_y: float | None = None) -> tuple[bool, float, float]:
         self.positions.append((x, y))
         self.cooldown += 1
         n = len(self.positions)
@@ -177,6 +177,10 @@ class BounceDetector:
         if abs(vy_prev) < 1.5 or abs(vy_curr) < 1.5:
             return False, vy_prev, vy_curr
         if vy_prev > 0 and vy_curr < 0 and self.cooldown >= self.COOLDOWN_FRAMES:
+            # Only count as a bounce if the ball is near the table surface.
+            # This filters out mid-air tracker jitter that mimics a vy reversal.
+            if table_y is not None and abs(y - table_y) > 75:
+                return False, vy_prev, vy_curr
             self.cooldown = 0
             return True, vy_prev, vy_curr
         return False, vy_prev, vy_curr
