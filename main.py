@@ -21,7 +21,7 @@ import cv2
 
 from calibration import calibrate, load_calibration
 from display import draw_score, draw_table
-from game import CVEvent, RefereeEngine, TableNormalizer
+from game import CVEvent, RefereeEngine, RallyPhase, TableNormalizer
 from tracker import BallTracker, BounceDetector, OOBDetector
 
 
@@ -54,6 +54,7 @@ def run(camera_index: int, use_saved: bool = False) -> None:
 
     t0 = time.time()
     trail: list[tuple[int, int]] = []
+    last_nx = 0.5
     paused = False
     frame = first if ret else None
 
@@ -82,26 +83,29 @@ def run(camera_index: int, use_saved: bool = False) -> None:
                 trail.pop(0)
 
             nx = normalizer.normalize_x(px)
+            last_nx = float(nx)
+            table_y_for_oob = normalizer.get_table_y(float(px))
 
             raw = tracker.last_raw
             if raw is not None:
-                table_y = normalizer.get_table_y(float(raw[0]))
-                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]), table_y, ts_ms=ts)
+                table_y_for_bounce = normalizer.get_table_y(float(raw[0]))
+                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]), table_y_for_bounce)
+            else:
+                is_bounce, vyp, vyc = False, 0.0, 0.0
 
-                if is_bounce:
-                    pt = engine.process_event(CVEvent(ts, nx, 0.5, vyp, vyc))
-                    if pt:
-                        _print_point(engine, pt)
-                        bounce_det.reset()
-                        oob_det.reset()
+            if is_bounce:
+                pt = engine.process_event(CVEvent(ts, nx, 0.5, vyp, vyc))
+                if pt:
+                    _print_point(engine, pt)
+                    bounce_det.reset()
+                    oob_det.reset()
 
-                # OOB only on real detections (not Kalman predictions)
-                if oob_det.update(nx):
-                    pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
-                    if pt:
-                        _print_point(engine, pt)
-                        bounce_det.reset()
-                        oob_det.reset()
+            if oob_det.update(nx, float(py), table_y_for_oob, float(px), frame.shape[1]):
+                pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
+                if pt:
+                    _print_point(engine, pt)
+                    bounce_det.reset()
+                    oob_det.reset()
 
             cv2.circle(disp, (ipx, ipy), 8, (0,0,255), -1)
             cv2.circle(disp, (ipx, ipy), 10, (255,255,255), 2)
@@ -114,10 +118,18 @@ def run(camera_index: int, use_saved: bool = False) -> None:
         else:
             trail.clear()
 
-        # 3-second timeout: if no bounce for 3s, award point to current striker
-        timeout_pt = engine.check_timeout(ts)
-        if timeout_pt:
-            _print_point(engine, timeout_pt)
+            if engine.state_machine.phase == RallyPhase.RALLY and tracker.last_raw is None:
+                pt = engine.process_event(
+                    CVEvent(ts, last_nx, 0.5, 1.0, -1.0, oob_source="camera-range")
+                )
+                if pt:
+                    _print_point(engine, pt)
+                    bounce_det.reset()
+                    oob_det.reset()
+
+        pt = engine.check_timeout(ts)
+        if pt:
+            _print_point(engine, pt)
             bounce_det.reset()
             oob_det.reset()
 

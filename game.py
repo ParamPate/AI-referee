@@ -52,6 +52,7 @@ class CVEvent:
     y: float
     vy_prev: float
     vy_current: float
+    oob_source: str | None = None
 
 
 @dataclass
@@ -124,6 +125,7 @@ class RallyPhase(str, Enum):
 
 class GameStateMachine:
     POST_POINT_LOCKOUT_MS = 1500
+    MIN_BOUNCE_INTERVAL_MS = 220
 
     def __init__(self, server: str = PLAYER_A):
         self.phase = RallyPhase.SERVE_START
@@ -158,7 +160,7 @@ class GameStateMachine:
         return self._handle_bounce(event)
 
     def check_timeout(self, now_ms: int, timeout_ms: int = 3000) -> PointResult | None:
-        if self.phase == RallyPhase.POINT_END:
+        if self.phase != RallyPhase.RALLY:
             return None
         if not self._bounce_history:
             return None
@@ -166,6 +168,7 @@ class GameStateMachine:
             return None
         _, last_ts = self._bounce_history[-1]
         if now_ms - last_ts >= timeout_ms:
+            print(f"{opponent(self.current_striker)} made a mistake: No return within 3s")
             result = PointResult(
                 winner=self.current_striker,
                 reason=f"No return by {opponent(self.current_striker)} (3s timeout)",
@@ -190,7 +193,21 @@ class GameStateMachine:
 
     # ── bounce handler ───────────────────────────────────────────────
     def _handle_bounce(self, event: CVEvent) -> PointResult | None:
-        side = table_side(event.x)
+        region = table_region(event.x)
+        if region == OUT:
+            return None
+
+        # Debounce bounce events so one physical bounce does not get counted
+        # multiple times due to tracker jitter.
+        if self._bounce_history:
+            last_side, last_ts = self._bounce_history[-1]
+            is_rapid = (event.timestamp - last_ts) < self.MIN_BOUNCE_INTERVAL_MS
+            # Only suppress rapid repeats on the same side; keep rapid cross-side
+            # transitions so valid rally events are not dropped.
+            if is_rapid and region == last_side:
+                return None
+
+        side = region
         self._bounce_history.append((side, event.timestamp))
 
         # --- SERVE phase 1: first bounce must be on server's side ---
@@ -199,6 +216,7 @@ class GameStateMachine:
             if side == expected:
                 self.phase = RallyPhase.SERVE_CROSS
                 return None
+            print(f"{self.server} made a mistake: Serve fault: first bounce on wrong side")
             return self._award(
                 opponent(self.server),
                 "Serve fault: first bounce on wrong side",
@@ -211,6 +229,7 @@ class GameStateMachine:
             if side == expected:
                 self.phase = RallyPhase.RALLY
                 return None
+            print(f"{self.server} made a mistake: Serve fault: didn't reach opponent's side")
             return self._award(
                 opponent(self.server),
                 "Serve fault: didn't reach opponent's side",
@@ -224,6 +243,15 @@ class GameStateMachine:
         prev_side = self._bounce_history[-2][0]
         curr_side = self._bounce_history[-1][0]
 
+        if curr_side == prev_side:
+            loser = player_for_side(curr_side)
+            print(f"{loser} made a mistake: double bounce")
+            return self._award(
+                opponent(loser),
+                f"{loser} double bounce",
+                event.timestamp,
+            )
+
         if curr_side != prev_side:
             # Ball crossed to the other side — valid return
             # The player on the *previous* bounce's side made the hit
@@ -232,11 +260,15 @@ class GameStateMachine:
 
     # ── OOB handler ──────────────────────────────────────────────────
     def _handle_oob(self, event: CVEvent) -> PointResult | None:
+        is_camera_range_oob = (event.oob_source == "camera-range")
+        oob_suffix = " (ball out of camera range)" if is_camera_range_oob else ""
+
         # Serve phase — any OOB is a serve fault
         if self.phase in (RallyPhase.SERVE_START, RallyPhase.SERVE_CROSS):
+            print(f"{self.server} made a mistake: Serve fault: ball out of bounds")
             return self._award(
                 opponent(self.server),
-                "Serve fault: ball out of bounds",
+                f"Serve fault: ball out of bounds{oob_suffix}",
                 event.timestamp,
             )
 
@@ -249,15 +281,17 @@ class GameStateMachine:
 
         if last_side != striker_side:
             # Last bounce was on opponent's side — they didn't return it
+            print(f"{opponent(self.current_striker)} made a mistake: failed to return{oob_suffix}")
             return self._award(
                 self.current_striker,
-                f"{opponent(self.current_striker)} failed to return",
+                f"{opponent(self.current_striker)} failed to return{oob_suffix}",
                 event.timestamp,
             )
         # Last bounce was on striker's own side — striker hit it out
+        print(f"{self.current_striker} made a mistake: hit out of bounds{oob_suffix}")
         return self._award(
             opponent(self.current_striker),
-            f"{self.current_striker} hit out of bounds",
+            f"{self.current_striker} hit out of bounds{oob_suffix}",
             event.timestamp,
         )
 
@@ -270,13 +304,18 @@ class RefereeEngine:
     def __init__(self, initial_server: str = PLAYER_A):
         self.scorer = Scorer(initial_server)
         self.state_machine = GameStateMachine(server=initial_server)
+        self._post_point_lockout_ms = GameStateMachine.POST_POINT_LOCKOUT_MS
+        self._last_point_ts: int = -(self._post_point_lockout_ms + 1)
 
     def process_event(self, event: CVEvent) -> PointResult | None:
         if self.scorer.is_match_over():
             return None
+        if event.timestamp - self._last_point_ts < self._post_point_lockout_ms:
+            return None
         result = self.state_machine.process_event(event)
         if result is None:
             return None
+        self._last_point_ts = event.timestamp
         self.scorer.add_point(result.winner)
         if not self.scorer.is_match_over():
             self.state_machine = GameStateMachine(server=self.scorer.current_server)
@@ -285,9 +324,12 @@ class RefereeEngine:
     def check_timeout(self, now_ms: int) -> PointResult | None:
         if self.scorer.is_match_over():
             return None
+        if now_ms - self._last_point_ts < self._post_point_lockout_ms:
+            return None
         result = self.state_machine.check_timeout(now_ms)
         if result is None:
             return None
+        self._last_point_ts = now_ms
         self.scorer.add_point(result.winner)
         if not self.scorer.is_match_over():
             self.state_machine = GameStateMachine(server=self.scorer.current_server)
