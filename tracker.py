@@ -3,8 +3,6 @@ Ball detection: HSV color tracker with Kalman filter, bounce detector, OOB detec
 """
 from __future__ import annotations
 
-import math
-
 import cv2
 import numpy as np
 
@@ -16,17 +14,13 @@ import numpy as np
 class BallTracker:
     MAX_JUMP_PX = 350        # allow larger jumps for fast balls
     MAX_LOST_FRAMES = 20     # coast on Kalman for up to 20 frames
-    MIN_BALL_RADIUS = 2      # reject contours smaller than this
-    MAX_BALL_RADIUS = 15     # reject contours larger (paddles, arms)
-    MIN_CIRCULARITY = 0.7    # ball is round; paddles are oblong
-    MAX_BALL_AREA = 700      # ~π·15² ≈ 707, generous cap
 
     def __init__(self, hsv_lower: list[int], hsv_upper: list[int]):
         self.hsv_lower = np.array(hsv_lower, dtype=np.uint8)
         self.hsv_upper = np.array(hsv_upper, dtype=np.uint8)
         # Slightly widen the HSV range to handle motion blur / lighting shifts
-        self._hsv_lo_wide = np.clip(self.hsv_lower - [5, 25, 25], 0, 255).astype(np.uint8)
-        self._hsv_hi_wide = np.clip(self.hsv_upper + [5, 25, 25], 0, 255).astype(np.uint8)
+        self._hsv_lo_wide = np.clip(self.hsv_lower - [8, 40, 40], 0, 255).astype(np.uint8)
+        self._hsv_hi_wide = np.clip(self.hsv_upper + [8, 40, 40], 0, 255).astype(np.uint8)
         self._init_kalman()
         self._kalman_ready = False
         self._lost_count = self.MAX_LOST_FRAMES + 1
@@ -112,18 +106,13 @@ class BallTracker:
         best, best_score = None, 0.0
         for c in contours:
             area = cv2.contourArea(c)
-            if area < 10 or area > self.MAX_BALL_AREA:
+            if area < 10 or area > 14000:
                 continue
-            # --- Radius gate (minEnclosingCircle) ---
-            _, radius = cv2.minEnclosingCircle(c)
-            if radius < self.MIN_BALL_RADIUS or radius > self.MAX_BALL_RADIUS:
-                continue
-            # --- Circularity gate ---
             perim = cv2.arcLength(c, True)
             if perim == 0:
                 continue
-            circ = 4.0 * math.pi * area / (perim * perim)
-            if circ < self.MIN_CIRCULARITY:
+            circ = 4.0 * np.pi * area / (perim * perim)
+            if circ < 0.15:
                 continue
             M = cv2.moments(c)
             if M["m00"] <= 0:
@@ -171,16 +160,15 @@ def sample_ball_color(frame: np.ndarray, cx: int, cy: int) -> tuple[list[int], l
 # =====================================================================
 
 class BounceDetector:
-    BOUNCE_MARGIN_PX = 30      # ball must be within 30px of table surface
-    DEBOUNCE_MS = 300          # minimum 300ms between bounces
+    COOLDOWN_FRAMES = 18
 
     def __init__(self) -> None:
         self.positions: list[tuple[float, float]] = []
-        self._last_bounce_ts: int = -1000  # ms timestamp of last accepted bounce
+        self.cooldown = self.COOLDOWN_FRAMES
 
-    def update(self, x: float, y: float, table_y: float | None = None,
-               ts_ms: int = 0) -> tuple[bool, float, float]:
+    def update(self, x: float, y: float, table_y: float | None = None) -> tuple[bool, float, float]:
         self.positions.append((x, y))
+        self.cooldown += 1
         n = len(self.positions)
         if n < 7:
             return False, 0.0, 0.0
@@ -188,20 +176,18 @@ class BounceDetector:
         vy_curr = self._vy(-3, 0)
         if abs(vy_prev) < 1.5 or abs(vy_curr) < 1.5:
             return False, vy_prev, vy_curr
-        if vy_prev > 0 and vy_curr < 0:
-            # --- Table proximity gate ---
-            if table_y is not None and abs(y - table_y) > self.BOUNCE_MARGIN_PX:
+        if vy_prev > 0 and vy_curr < 0 and self.cooldown >= self.COOLDOWN_FRAMES:
+            # Only count as a bounce if the ball is near the table surface.
+            # This filters out mid-air tracker jitter that mimics a vy reversal.
+            if table_y is not None and abs(y - table_y) > 75:
                 return False, vy_prev, vy_curr
-            # --- Time-based debouncer (300ms) ---
-            if ts_ms - self._last_bounce_ts < self.DEBOUNCE_MS:
-                return False, vy_prev, vy_curr
-            self._last_bounce_ts = ts_ms
+            self.cooldown = 0
             return True, vy_prev, vy_curr
         return False, vy_prev, vy_curr
 
     def reset(self) -> None:
         self.positions.clear()
-        # keep _last_bounce_ts so the debouncer survives resets
+        self.cooldown = self.COOLDOWN_FRAMES
 
     def _vy(self, s: int, e: int) -> float:
         seg = self.positions[max(0, len(self.positions)+s):len(self.positions)+e]
@@ -209,18 +195,25 @@ class BounceDetector:
 
 
 class OOBDetector:
-    """Fires once when the ball's normalized x leaves [0, 1]."""
+    """Fires once when the ball is out in x and below table height in y."""
 
-    def __init__(self) -> None:
+    def __init__(self, drop_below_table_px: float = 20.0, horizontal_margin: float = 0.08) -> None:
+        self.drop_below_table_px = float(drop_below_table_px)
+        self.horizontal_margin = float(horizontal_margin)
         self.was_in = False
         self.fired = False
 
-    def update(self, nx: float) -> bool:
-        m = 0.08
+    def update(self, nx: float, y: float, table_y: float | None) -> bool:
+        m = self.horizontal_margin
         inside = -m <= nx <= 1 + m
         if inside:
             self.was_in = True
             self.fired = False
+            return False
+        if table_y is None:
+            return False
+        below_table = y >= (table_y + self.drop_below_table_px)
+        if not below_table:
             return False
         if self.was_in and not self.fired:
             self.fired = True
@@ -230,3 +223,5 @@ class OOBDetector:
     def reset(self) -> None:
         self.was_in = False
         self.fired = False
+
+

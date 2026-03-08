@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 
 from calibration import calibrate, load_calibration
-from game import CVEvent, RefereeEngine, TableNormalizer
+from game import CVEvent, RefereeEngine, RallyPhase, TableNormalizer
 from tracker import BallTracker, BounceDetector, OOBDetector
 from display import draw_table, draw_score
 
@@ -87,6 +87,7 @@ def cv_loop(camera_index: int, use_saved: bool) -> None:
 
     t0 = time.time()
     trail: list[tuple[int, int]] = []
+    last_nx = 0.5
     frame = first if ret else None
 
     print("CV loop started. Open http://localhost:8000 in your browser.")
@@ -123,8 +124,10 @@ def cv_loop(camera_index: int, use_saved: bool) -> None:
                 trail.pop(0)
 
             nx = normalizer.normalize_x(px)
+            last_nx = float(nx)
             ball_x_norm = nx
             ball_y_pix = py
+            table_y_for_oob = normalizer.get_table_y(float(px))
 
             raw = tracker.last_raw
             if raw is not None:
@@ -142,7 +145,7 @@ def cv_loop(camera_index: int, use_saved: bool) -> None:
                     bounce_det.reset()
                     oob_det.reset()
 
-            if oob_det.update(nx):
+            if oob_det.update(nx, float(py), table_y_for_oob):
                 pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
                 if pt:
                     last_pt_str = f"{pt.winner} — {pt.reason}"
@@ -174,6 +177,35 @@ def cv_loop(camera_index: int, use_saved: bool) -> None:
         else:
             trail.clear()
             game_state.update(ball_x=None, ball_y=None)
+
+            if engine.state_machine.phase == RallyPhase.RALLY and tracker.last_raw is None:
+                pt = engine.process_event(
+                    CVEvent(ts, last_nx, 0.5, 1.0, -1.0, oob_source="camera-range")
+                )
+                if pt:
+                    bounce_det.reset()
+                    oob_det.reset()
+                    s = engine.scorer
+                    game_state.update(
+                        score_a=s.score_a,
+                        score_b=s.score_b,
+                        match_winner=s.match_winner,
+                        state=engine.state_machine.state.value,
+                        last_point=f"{pt.winner} — {pt.reason}",
+                    )
+
+        pt = engine.check_timeout(ts)
+        if pt:
+            bounce_det.reset()
+            oob_det.reset()
+            s = engine.scorer
+            game_state.update(
+                score_a=s.score_a,
+                score_b=s.score_b,
+                match_winner=s.match_winner,
+                state=engine.state_machine.state.value,
+                last_point=f"{pt.winner} — {pt.reason}",
+            )
 
         draw_table(disp, table_pts)
         draw_score(disp, engine)
