@@ -1,4 +1,4 @@
-# AI Referee
+# RefAI
 
 A real-time automated ping pong referee system using computer vision. The system tracks the ball, detects bounces and out-of-bounds violations, and automatically scores rallies according to official ping pong rules.
 
@@ -42,6 +42,9 @@ AI-referee/
 ├── calibration.json   # Saved calibration data
 └── requirements.txt   # Python dependencies
 ```
+
+![techstack](https://github.com/user-attachments/assets/b341d074-733b-4e1f-b3f9-9995f3832c01)
+
 
 ## Key Technologies
 
