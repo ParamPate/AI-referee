@@ -125,6 +125,7 @@ class RallyPhase(str, Enum):
 
 class GameStateMachine:
     POST_POINT_LOCKOUT_MS = 1500
+    MIN_BOUNCE_INTERVAL_MS = 220
 
     def __init__(self, server: str = PLAYER_A):
         self.phase = RallyPhase.SERVE_START
@@ -159,7 +160,7 @@ class GameStateMachine:
         return self._handle_bounce(event)
 
     def check_timeout(self, now_ms: int, timeout_ms: int = 3000) -> PointResult | None:
-        if self.phase == RallyPhase.POINT_END:
+        if self.phase != RallyPhase.RALLY:
             return None
         if not self._bounce_history:
             return None
@@ -195,6 +196,17 @@ class GameStateMachine:
         region = table_region(event.x)
         if region == OUT:
             return None
+
+        # Debounce bounce events so one physical bounce does not get counted
+        # multiple times due to tracker jitter.
+        if self._bounce_history:
+            last_side, last_ts = self._bounce_history[-1]
+            is_rapid = (event.timestamp - last_ts) < self.MIN_BOUNCE_INTERVAL_MS
+            # Only suppress rapid repeats on the same side; keep rapid cross-side
+            # transitions so valid rally events are not dropped.
+            if is_rapid and region == last_side:
+                return None
+
         side = region
         self._bounce_history.append((side, event.timestamp))
 
@@ -230,6 +242,15 @@ class GameStateMachine:
 
         prev_side = self._bounce_history[-2][0]
         curr_side = self._bounce_history[-1][0]
+
+        if curr_side == prev_side:
+            loser = player_for_side(curr_side)
+            print(f"{loser} made a mistake: double bounce")
+            return self._award(
+                opponent(loser),
+                f"{loser} double bounce",
+                event.timestamp,
+            )
 
         if curr_side != prev_side:
             # Ball crossed to the other side — valid return

@@ -195,15 +195,30 @@ class BounceDetector:
 
 
 class OOBDetector:
-    """Fires once when the ball is out in x and below table height in y."""
+    """Fires once when ball is out in x and either below table or exits screen side at table level."""
 
-    def __init__(self, drop_below_table_px: float = 20.0, horizontal_margin: float = 0.08) -> None:
+    def __init__(
+        self,
+        drop_below_table_px: float = 20.0,
+        horizontal_margin: float = 0.08,
+        table_level_band_px: float = 30.0,
+        side_edge_px: int = 20,
+    ) -> None:
         self.drop_below_table_px = float(drop_below_table_px)
         self.horizontal_margin = float(horizontal_margin)
+        self.table_level_band_px = float(table_level_band_px)
+        self.side_edge_px = int(side_edge_px)
         self.was_in = False
         self.fired = False
 
-    def update(self, nx: float, y: float, table_y: float | None) -> bool:
+    def update(
+        self,
+        nx: float,
+        y: float,
+        table_y: float | None,
+        x_px: float | None = None,
+        frame_width: int | None = None,
+    ) -> bool:
         m = self.horizontal_margin
         inside = -m <= nx <= 1 + m
         if inside:
@@ -213,7 +228,14 @@ class OOBDetector:
         if table_y is None:
             return False
         below_table = y >= (table_y + self.drop_below_table_px)
-        if not below_table:
+
+        near_table_level = abs(y - table_y) <= self.table_level_band_px
+        near_side_edge = False
+        if x_px is not None and frame_width is not None and frame_width > 0:
+            near_side_edge = (x_px <= self.side_edge_px) or (x_px >= (frame_width - 1 - self.side_edge_px))
+        side_exit_at_table_level = near_table_level and near_side_edge
+
+        if not (below_table or side_exit_at_table_level):
             return False
         if self.was_in and not self.fired:
             self.fired = True

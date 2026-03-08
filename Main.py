@@ -100,7 +100,7 @@ def run(camera_index: int, use_saved: bool = False) -> None:
                     bounce_det.reset()
                     oob_det.reset()
 
-            if oob_det.update(nx, float(py), table_y_for_oob):
+            if oob_det.update(nx, float(py), table_y_for_oob, float(px), frame.shape[1]):
                 pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
                 if pt:
                     _print_point(engine, pt)
