@@ -86,23 +86,22 @@ def run(camera_index: int, use_saved: bool = False) -> None:
             raw = tracker.last_raw
             if raw is not None:
                 table_y = normalizer.get_table_y(float(raw[0]))
-                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]), table_y)
-            else:
-                is_bounce, vyp, vyc = False, 0.0, 0.0
+                is_bounce, vyp, vyc = bounce_det.update(float(raw[0]), float(raw[1]), table_y, ts_ms=ts)
 
-            if is_bounce:
-                pt = engine.process_event(CVEvent(ts, nx, 0.5, vyp, vyc))
-                if pt:
-                    _print_point(engine, pt)
-                    bounce_det.reset()
-                    oob_det.reset()
+                if is_bounce:
+                    pt = engine.process_event(CVEvent(ts, nx, 0.5, vyp, vyc))
+                    if pt:
+                        _print_point(engine, pt)
+                        bounce_det.reset()
+                        oob_det.reset()
 
-            if oob_det.update(nx):
-                pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
-                if pt:
-                    _print_point(engine, pt)
-                    bounce_det.reset()
-                    oob_det.reset()
+                # OOB only on real detections (not Kalman predictions)
+                if oob_det.update(nx):
+                    pt = engine.process_event(CVEvent(ts, nx, 0.5, 1.0, -1.0))
+                    if pt:
+                        _print_point(engine, pt)
+                        bounce_det.reset()
+                        oob_det.reset()
 
             cv2.circle(disp, (ipx, ipy), 8, (0,0,255), -1)
             cv2.circle(disp, (ipx, ipy), 10, (255,255,255), 2)
@@ -114,6 +113,13 @@ def run(camera_index: int, use_saved: bool = False) -> None:
                         cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0,255,0), 1)
         else:
             trail.clear()
+
+        # 3-second timeout: if no bounce for 3s, award point to current striker
+        timeout_pt = engine.check_timeout(ts)
+        if timeout_pt:
+            _print_point(engine, timeout_pt)
+            bounce_det.reset()
+            oob_det.reset()
 
         draw_table(disp, table_pts)
         draw_score(disp, engine)
