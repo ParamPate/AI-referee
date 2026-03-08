@@ -175,6 +175,19 @@ def cv_loop(camera_index: int, use_saved: bool) -> None:
             trail.clear()
             game_state.update(ball_x=None, ball_y=None)
 
+        pt = engine.check_timeout(ts)
+        if pt:
+            bounce_det.reset()
+            oob_det.reset()
+            s = engine.scorer
+            game_state.update(
+                score_a=s.score_a,
+                score_b=s.score_b,
+                match_winner=s.match_winner,
+                state=engine.state_machine.state.value,
+                last_point=f"{pt.winner} — {pt.reason}",
+            )
+
         draw_table(disp, table_pts)
         draw_score(disp, engine)
 
